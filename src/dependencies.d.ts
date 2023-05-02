@@ -1,4 +1,3 @@
-import { IAppraisedCard } from './appraise';
 import { GameEngine } from './game/game-engine';
 import { IHttpRequest } from './net-utils';
 
@@ -24,7 +23,7 @@ declare namespace IDataSource {
     export interface ICardDeck {
         readonly playerId: string;
         readonly createdAt: string;
-        cards: Map<string, IAppraisedCard>
+        cards: { nftId: string, url: string }[];
         label: string;
     }
     export type CardDecks = {

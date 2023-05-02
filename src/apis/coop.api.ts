@@ -29,7 +29,7 @@ export const createCoopHandler = (ds: IDataSource, gameEngine: GameEngine, authP
                     _dbTtl: moment.utc(now).add({ days: 1 }).unix(),
                 };
 
-                await gameEngine.createGame(game.id, player.id, [...deck.cards.keys()]);
+                await gameEngine.createGame(game.id, player.id, deck.cards.map(x => x.nftId));
 
                 player.activeGameId = game.id;
                 await ds.execUpdates(
@@ -51,7 +51,7 @@ export const createCoopHandler = (ds: IDataSource, gameEngine: GameEngine, authP
                 const deck = await _expectValidActiveDeck(player);
                 const game = await _expectCoopGameJoinable(payload.gameId);
 
-                await gameEngine.addPlayer(game.id, player.id, [...deck.cards.keys()]);
+                await gameEngine.addPlayer(game.id, player.id, deck.cards.map(x => x.nftId));
 
                 player.activeGameId = game.id;
                 game.playersIds.add(player.id);
@@ -74,7 +74,7 @@ export const createCoopHandler = (ds: IDataSource, gameEngine: GameEngine, authP
 
                 player.activeGameId = '';
                 game.playersIds.delete(player.id);
-                game.gameState = game.playersIds.size >= 2 ? 'full' : 'open';
+                // game.gameState = game.playersIds.size >= 2 ? 'full' : 'open';
                 game.ingorePlayerIds.add(player.id);
                 await ds.execUpdates(
                     ds.Players.update.make(player),

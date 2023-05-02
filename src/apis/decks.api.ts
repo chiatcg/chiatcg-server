@@ -1,6 +1,5 @@
 import * as moment from 'moment';
 import { z } from 'zod';
-import { appraiseCard } from '../appraise';
 import { IAuthProvider, IDataSource } from '../dependencies';
 import { ExtDeps } from '../external-dependencies';
 import { toClientDeck } from '../models';
@@ -19,7 +18,7 @@ export const createDeckHandler = (ds: IDataSource, authProvider: IAuthProvider):
                 const payload = schema.parse(body);
 
                 const player = await authProvider.getPlayerFromRequest(req);
-                const nfts = (await Promise.all((payload.nftIds).slice(0, 6).map(ExtDeps.getNft))).filter((x): x is NonNullable<typeof x> => !!x).map(x => x.nft);
+                const nfts = (await Promise.all((payload.nftIds).slice(0, 6).map(ExtDeps.getNft))).filter(Boolean).map(x => x.nft);
                 if (nfts.length !== 6) {
                     return [StatusCodes.forbidden, { reason: `not enough nftIds, need 6, got ${nfts.length}` }];
                 }
@@ -28,7 +27,7 @@ export const createDeckHandler = (ds: IDataSource, authProvider: IAuthProvider):
                     playerId: player.id,
                     createdAt: moment.utc().format(FULL_DATETIME_FORMAT),
                     label: payload.deckLabel,
-                    cards: new Map(nfts.map(nft => [nft.nftId, appraiseCard(nft)])),
+                    cards: nfts.map(x => ({ nftId: x.nftId, url: x.urls[0] || '' })),
                 });
 
                 return [StatusCodes.ok, { deck: toClientDeck(deck) }];
@@ -72,7 +71,7 @@ export const createDeckHandler = (ds: IDataSource, authProvider: IAuthProvider):
                     return [StatusCodes.notFound, { reason: 'one or more nft ids were not found, or did not belong to the player' }];
                 }
 
-                deck.cards = new Map(nfts.map(nft => [nft.nftId, appraiseCard(nft)]));
+                deck.cards = nfts.map(x => ({ nftId: x.nftId, url: x.urls[0] || '' }));
                 await ds.CardDecks.update.exec(deck);
 
                 return [StatusCodes.ok, { deck: toClientDeck(deck) }];
@@ -105,7 +104,7 @@ export const getOrCreateActiveDeck = async (player: IDataSource.IPlayer, ds: IDa
         return deck;
     }
 
-    const cards = (await ExtDeps.getNftsByDidOrWallet(player.id, 6))?.nfts.filter((x): x is NonNullable<typeof x> => !!x) || [];
+    const cards = (await ExtDeps.getNftsByDidOrWallet(player.id, 6))?.nfts.filter(Boolean) || [];
     if (cards.length < 6) {
         return null;
     }
@@ -115,7 +114,7 @@ export const getOrCreateActiveDeck = async (player: IDataSource.IPlayer, ds: IDa
     deck = {
         playerId: player.id,
         createdAt: nowStr,
-        cards: new Map(cards.map(nft => [nft.nftId, appraiseCard(nft)])),
+        cards: cards.map(x => ({ nftId: x.nftId, url: x.urls[0] || '' })),
         label: 'default',
     };
 

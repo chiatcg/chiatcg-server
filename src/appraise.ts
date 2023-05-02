@@ -1,19 +1,16 @@
-import { ExtDeps } from './external-dependencies';
-
-export type ScriptName = typeof _ScriptNames[IAppraisedCard['faction']][number];
-export type ModName = typeof _ModNames[number];
+export type CoreScriptNames = typeof _CoreScriptNames[IAppraisedCard['faction']][number];
 
 export interface IAppraisedCard {
     nftId: string;
-    faction: 'red' | 'green' | 'blue';
-    scripts: ScriptName[];
+    faction: 'backdoor' | 'bruteforce' | 'malware';
+    coreScript: CoreScriptNames;
     tier: number;
     cpu: number;
     mem: number;
     url?: string;
 }
 
-export const appraiseCard = (nft: ExtDeps.INft): IAppraisedCard => {
+export const appraiseCard = ({ nftId, url }: { nftId: string, url: string }): IAppraisedCard => {
     /**
      * Generates card stats based on the number of digits in the last 8 chars of the nftId,
      * see probability breakdown below:
@@ -29,20 +26,23 @@ export const appraiseCard = (nft: ExtDeps.INft): IAppraisedCard => {
      * 0-1 account for 30% of all ids (T1)
      */
 
-    const nftId = nft.nftId;
-
-    // Last 9 chars of the nftId determine the card qualifier, Q
-    const Q = nftId.substring(nftId.length - 9).split('');
+    // Last 8 chars of the nftId determine the card qualifier, Q
+    const Q = nftId.substring(nftId.length - 8).split('');
 
     // Q[0] determines faction
-    let faction: IAppraisedCard['faction'] = 'red';
+    let faction: IAppraisedCard['faction'];
     const factionQualifier = Q[0]!.charCodeAt(0);
-    if (factionQualifier < 99) faction = 'blue';
-    else if (factionQualifier < 111) faction = 'red';
-    else faction = 'green';
+    if (factionQualifier < 99) faction = 'backdoor'; // 0-9, a, b (12 chars)
+    else if (factionQualifier < 111) faction = 'bruteforce'; // c-n (12 chars)
+    else faction = 'malware'; // o-z (12 chars)
 
-    // Q[1:] determine tier, one tier level per digit
-    const tier = Q.slice(1).reduce((sum, c) => isNaN(+c) ? sum : (sum + 1), 0);
+    // Q[1] determines faction core script
+    const coreScripts = _CoreScriptNames[faction];
+    const coreScript = coreScripts[Q[1]!.charCodeAt(0) % coreScripts.length]!;
+
+    // Q[2:] is the card statistics qualifier, SQ, each granted statistic increases card tier
+    const SQ = Q.slice(2);
+    const tier = SQ.reduce((sum, c) => isNaN(+c) ? sum : (sum + 1), 0);
     if (tier < 2) {
         // Less than 2 digits is a T1; either 1/2 or 2/1
         const singleQualifier = nftId.charCodeAt(nftId.length - 1);
@@ -54,19 +54,18 @@ export const appraiseCard = (nft: ExtDeps.INft): IAppraisedCard => {
             tier: 1,
             cpu,
             mem,
-            scripts: [_ScriptNames[faction][0]],
-            url: nft.urls[0],
+            coreScript,
+            url,
         };
     }
 
-    // Q[1:7] determine cpu and mem, high digits increase cpu, low digits increase mem
-    const cpuMemQualifier = Q.slice(1, 7);
-    const cpu = cpuMemQualifier.reduce((sum, c) => +c > 5 ? (sum + 1) : sum, 1);
-    const mem = cpuMemQualifier.reduce((sum, c) => +c <= 5 ? (sum + 1) : sum, 1);
-
-    // Q[7:] determine abilities, each digit gives one ability
-    const extraFactionScriptQualifier = Q[7]!;
-    //const extraNeutralScriptQualifier = Q[8];
+    // For each character c in SQ, grant CPU if c > 5, MEM c <= 5, nothing otherwise
+    let cpu = 1;
+    let mem = 1
+    for (const c of SQ) {
+        if (+c > 5) cpu++;
+        else if (+c <= 5) mem++;
+    }
 
     return {
         nftId,
@@ -74,53 +73,28 @@ export const appraiseCard = (nft: ExtDeps.INft): IAppraisedCard => {
         tier,
         cpu,
         mem,
-        scripts: [
-            _ScriptNames[faction][0],
-            genExtraFactionScript(faction, extraFactionScriptQualifier),
-            // genExtraNeutralScript(extraNeutralScriptQualifier),
-        ].filter(Boolean),
-        url: nft.urls[0],
+        coreScript,
+        url,
     };
 };
 
-const genExtraFactionScript = (faction: IAppraisedCard['faction'], _quality: string) => {
-    const scriptName = _ScriptNames[faction];
-    return scriptName[1 + (_quality.charCodeAt(0) % (scriptName.length - 1))]!;
-}
-
-const _ScriptNames = {
-    blue: [
-        'bd_backdoor',
-        'bd_disconnect',
-        'bd_disrupt',
-        'bd_feedback',
-        'bd_reboot',
-        'bd_tunnel',
+const _CoreScriptNames = {
+    backdoor: [
+        'bd_exploit',
+        'bd_decode',
+        'bd_secure',
     ] as const,
 
-    green: [
-        'mw_malware',
-        'mw_phishing',
-        'mw_shareware',
-        'mw_freeware',
-        'mw_spoof',
-    ] as const,
-
-    red: [
-        'bf_bruteforce',
-        'bf_flood',
-        'bf_ddos',
-        'bf_multicast',
+    bruteforce: [
+        'bf_firewall',
         'bf_obfuscate',
+        'bf_spam',
+    ] as const,
+
+    malware: [
+        'mw_forward',
+        'mw_freeware',
+        'mw_worm',
     ] as const,
 };
-(_ScriptNames as Record<IAppraisedCard['faction'], readonly string[]>);
-
-const _ModNames = [
-    'backdoor',
-    'feedback',
-    'freeze',
-    'scriptCooldown',
-    'stun',
-    'winOnDeath',
-] as const;
+(_CoreScriptNames as Record<IAppraisedCard['faction'], readonly string[]>);

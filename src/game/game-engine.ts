@@ -25,6 +25,7 @@ export namespace GameEngine {
 
         enemies: IEnemyCardState[];
         players: Map<string, IPlayerState>;
+        playerMovesPerTurn: number;
         turn: number;
         nextId: number;
     }
@@ -33,6 +34,7 @@ export namespace GameEngine {
         id: string;
         cards: IPlayerCardState[];
         endedTurn: boolean;
+        movesLeft: number;
     }
 
     export interface IPlayerCardState extends _ICommonCardState {
@@ -43,6 +45,7 @@ export namespace GameEngine {
     export interface IEnemyCardState extends _ICommonCardState {
         enemyClass: string;
         intent?: { scriptData: CardScript.ScriptData, targetCardId: string };
+        maxMem: number;
     }
     export type ICardState = IPlayerCardState | IEnemyCardState;
     export abstract class GameEngineError extends Error {
@@ -57,17 +60,18 @@ export namespace GameEngine {
     export class GameNotFoundError extends GameEngineError { }
 
     export interface IGameContentPlugin {
-        cardMods: (typeof CardMod)[]
-        cardScripts: CardScript.CardScriptConstructor[];
+        cardMods: CardMod.ModConstructor[];
+        cardScripts: CardScript.ScriptConstructor[];
 
         createFirstEnemy(id: string): IEnemyCardState;
         createEnemy(enemyClass: string, id: string): IEnemyCardState;
+        addAdditionalScriptsFor(card: IPlayerCardState): void;
     }
 }
 
 export const createGameEngine = (contentPlugin: GameEngine.IGameContentPlugin, ds: IDataSource, playerPushProvider: IPlayerPushProvider) => {
-    contentPlugin.cardMods.forEach(mod => (CardMod as any)[mod.name] = mod);
-    contentPlugin.cardScripts.forEach(script => (CardScript as any)[script.name] = script);
+    contentPlugin.cardMods.forEach(mod => (CardMod.Content as CardMod.ModLibrary)[mod.name] = mod);
+    contentPlugin.cardScripts.forEach(script => (CardScript.Content as CardScript.ScriptLibrary)[script.name] = script);
 
     return {
         async beginGameDataTransaction<T>(gameId: string, stateAssertion: GameEngine.IGameData['state'][], func: (gameData: GameEngine.IGameData, broadcast: IPlayerPushProvider.IPushMessage[]) => Promise<T>): Promise<T | null> {
@@ -101,19 +105,18 @@ export const createGameEngine = (contentPlugin: GameEngine.IGameContentPlugin, d
         },
 
         async createGame(gameId: string, firstPlayerId: string, cardIds: string[]) {
-            const playerState = await this._createPlayerState(firstPlayerId, cardIds);
-
             const gameData: GameEngine.IGameData = {
                 id: gameId,
                 difficulty: 1,
                 state: 'created',
                 turn: 0,
                 ruleSetId: 'coop',
-                players: new Map([[firstPlayerId, playerState]]),
+                players: new Map(),
+                playerMovesPerTurn: 4,
                 enemies: [],
                 nextId: 1,
             };
-
+            gameData.players.set(firstPlayerId, await this._createPlayerState(gameData, firstPlayerId, cardIds));
             await ds.GameData.update.exec(gameData);
         },
 
@@ -123,9 +126,8 @@ export const createGameEngine = (contentPlugin: GameEngine.IGameContentPlugin, d
                 broadcast.push({ type: 'gameStart' });
 
                 const firstEnemy = contentPlugin.createFirstEnemy(GameEngineUtils.nextId(gameData));
-                GameEngineUtils.addEnemy(gameData, firstEnemy, 0, broadcast);
-                GameEngineUtils.generateIntent(gameData, firstEnemy, broadcast);
-                GameEngineUtils.triggerMods(gameData, firstEnemy, 'onGameStart', broadcast);
+                GameEngineUtils.addEnemy(gameData, firstEnemy, 0, true, broadcast);
+                GameEngineUtils.triggerMods('onGameStart', { broadcast, gameData, sourceCard: firstEnemy });
             });
         },
 
@@ -138,9 +140,9 @@ export const createGameEngine = (contentPlugin: GameEngine.IGameContentPlugin, d
         },
 
         async addPlayer(gameId: string, playerId: string, cardIds: string[]) {
-            const playerState = await this._createPlayerState(playerId, cardIds);
-
             return this.beginGameDataTransaction(gameId, [], async (gameData, broadcast) => {
+                const playerState = await this._createPlayerState(gameData, playerId, cardIds);
+
                 if (gameData.players.has(playerId)) throw new Error('player already in game');
 
                 gameData.players.set(playerId, playerState);
@@ -158,14 +160,37 @@ export const createGameEngine = (contentPlugin: GameEngine.IGameContentPlugin, d
             });
         },
 
+        async requestCardTargets(gameId: string, playerId: string, cardId: string, scriptName: string) {
+            const gameData = await this.getGameData(gameId);
+            const card = GameEngineUtils.findPlayerCardById(gameData, cardId);
+            if (card.isUsed) {
+                throw new Error(`[${cardId}] is used`);
+            }
+
+            const scriptData = card.scripts.find(x => x[0] === scriptName);
+            if (!scriptData) {
+                throw new Error(`Script [${scriptName}] not found in card [${cardId}]`);
+            }
+
+            const script = CardScript.deserialize(card, scriptData);
+            await playerPushProvider.push(playerId, [{
+                type: 'cardTargets',
+                cardId,
+                scriptName,
+                targetCardIds: script.targetFinder(gameData, card).map(x => x.id),
+            }]);
+        },
+
         async intent(gameId: string, playerId: string, sourceCardId?: string, sourceCardScript?: string, targetCardId?: string) {
             const gameData = await this.getGameData(gameId);
             const pushMessage: IPlayerPushProvider.IPushMessage[] = [{
-                type: 'playerIntent',
+                type: 'cardIntent',
+                cardId: sourceCardId,
+                intent: {
+                    scriptData: sourceCardScript,
+                    targetCardId,
+                },
                 playerId,
-                sourceCardId,
-                sourceCardScript,
-                targetCardId,
             }];
             await Promise.all(
                 [...gameData.players.keys()].filter(x => x !== playerId).map(x => playerPushProvider?.push(x, pushMessage)),
@@ -176,25 +201,20 @@ export const createGameEngine = (contentPlugin: GameEngine.IGameContentPlugin, d
             return this.beginGameDataTransaction(gameId, ['started'], async (gameData, broadcast) => {
                 const playerState = GameEngineUtils.findPlayerByCardId(gameData, sourceCardId);
                 if (playerState.id !== playerId) {
-                    return;
+                    throw new Error(`Player ${playerId} cannot make move on card ${sourceCardId} from owner ${playerState.id}`);
+                }
+                if (!playerState.movesLeft) {
+                    throw new Error(`No moves left`);
                 }
                 const sourceCard = playerState.cards.find(x => x.id === sourceCardId)!;
                 if (sourceCard.isUsed) {
-                    return;
+                    throw new Error(`Card is used`);
                 }
 
                 const targetCard = GameEngineUtils.findCardById(gameData, targetCardId);
-                broadcast.push({
-                    type: 'playerCardExecuting',
-                    playerId,
-                    sourceCardId,
-                    sourceCardScript,
-                    targetCardId,
-                });
-                const script = CardScript.deserialize(sourceCardScript, sourceCard);
-                script.execute(gameData, sourceCard, targetCard, broadcast);
-
-                sourceCard.isUsed = true;
+                CardScript.execute(gameData, sourceCard, sourceCardScript, targetCard, broadcast);
+                GameEngineUtils.changeCardIsUsed(sourceCard, true, broadcast);
+                playerState.movesLeft--;
             });
         },
 
@@ -236,10 +256,10 @@ export const createGameEngine = (contentPlugin: GameEngine.IGameContentPlugin, d
             return gameData;
         },
 
-        async _createPlayerState(playerId: string, cardIds: string[]): Promise<GameEngine.IPlayerState> {
+        async _createPlayerState(gameData: GameEngine.IGameData, playerId: string, cardIds: string[]): Promise<GameEngine.IPlayerState> {
             const cards = (await Promise.all(cardIds.map(ExtDeps.getNft)))
                 .filter((resp): resp is NonNullable<typeof resp> => !!resp?.nft)
-                .map(resp => appraiseCard(resp.nft));
+                .map(resp => appraiseCard({ nftId: resp.nft.nftId, url: resp.nft.urls[0] || '' }));
 
             if (cards.length !== cardIds.length) {
                 throw `could not resolve all cards for player ${playerId}`;
@@ -253,14 +273,18 @@ export const createGameEngine = (contentPlugin: GameEngine.IGameContentPlugin, d
                     isUsed: false,
                     cpu: card.cpu,
                     mem: card.mem,
-                    sec: 0,
+                    sec: card.tier * 5,
                     mods: [],
                     scripts: [],
                 })),
                 endedTurn: false,
+                movesLeft: gameData.playerMovesPerTurn,
             };
             for (const card of player.cards) {
-                card.scripts = card.card.scripts.map(scriptName => CardScript.deserialize([scriptName], card).scriptData);
+                card.scripts = [
+                    CardScript.fromScriptName(card, card.card.coreScript),
+                ];
+                contentPlugin.addAdditionalScriptsFor(card);
             }
             return player;
         },
@@ -274,21 +298,22 @@ export const createGameEngine = (contentPlugin: GameEngine.IGameContentPlugin, d
 
             for (const player of gameData.players.values()) {
                 player.endedTurn = false;
+                player.movesLeft = gameData.playerMovesPerTurn;
             }
 
             const playerCards = GameEngineUtils.getPlayerCards(gameData);
             for (const playerCard of playerCards) {
-                playerCard.isUsed = false;
-            }
-
-            for (const playerCard of [...playerCards]) {
-                if (!playerCards.includes(playerCard)) continue;
-                GameEngineUtils.triggerMods(gameData, playerCard, 'onTurnStart', broadcast);
+                GameEngineUtils.changeCardIsUsed(playerCard, false, broadcast);
             }
 
             for (const enemy of gameData.enemies) {
                 if (!gameData.enemies.includes(enemy)) continue;
-                GameEngineUtils.triggerMods(gameData, enemy, 'onTurnStart', broadcast);
+                GameEngineUtils.triggerMods('onTurnStart', { broadcast, gameData, sourceCard: enemy });
+            }
+
+            for (const playerCard of [...playerCards]) {
+                if (!playerCards.includes(playerCard)) continue;
+                GameEngineUtils.triggerMods('onTurnStart', { broadcast, gameData, sourceCard: playerCard });
             }
 
             this._checkGameOver(gameData, broadcast);
@@ -298,7 +323,8 @@ export const createGameEngine = (contentPlugin: GameEngine.IGameContentPlugin, d
             const playerCards = GameEngineUtils.getPlayerCards(gameData);
             for (const playerCard of playerCards) {
                 if (!playerCards.includes(playerCard)) continue;
-                GameEngineUtils.triggerMods(gameData, playerCard, 'onTurnEnd', broadcast);
+                GameEngineUtils.triggerMods('onTurnEnd', { broadcast, gameData, sourceCard: playerCard });
+                CardScript.tickCooldowns(playerCard, broadcast);
             }
 
             broadcast.push({
@@ -307,7 +333,8 @@ export const createGameEngine = (contentPlugin: GameEngine.IGameContentPlugin, d
 
             for (const enemy of gameData.enemies) {
                 if (!gameData.enemies.includes(enemy)) continue;
-                GameEngineUtils.triggerMods(gameData, enemy, 'onTurnEnd', broadcast);
+                GameEngineUtils.triggerMods('onTurnEnd', { broadcast, gameData, sourceCard: enemy });
+                CardScript.tickCooldowns(enemy, broadcast);
             }
 
             broadcast.push({

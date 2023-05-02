@@ -90,16 +90,20 @@ const gameContent: GameEngine.IGameContentPlugin = {
             enemyClass: 'testEnemy',
             cpu: 1,
             mem: 1,
+            maxMem: 1,
             mods: [],
             scripts: [],
             sec: 10,
         };
-        testEnemy.mods.push(new CardMod._standardAi().modData);
-        testEnemy.scripts.push(new CardScript.bf_bruteforce(testEnemy, 50).scriptData);
+        testEnemy.mods.push(new CardMod.Content._standardAi().serialize());
+        testEnemy.scripts.push(new CardScript.Content._attack(testEnemy, 'strong').serialize());
         return testEnemy;
     },
     createEnemy(_enemyClass, id) {
         return this.createFirstEnemy(id);
+    },
+    addAdditionalScriptsFor(_card) {
+        // Note: Called by GameEngine when a player is joined; this hook allows for dynamic scripts for a given card
     },
 };
 
