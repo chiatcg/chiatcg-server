@@ -23,7 +23,7 @@ declare namespace IDataSource {
     export interface ICardDeck {
         readonly playerId: string;
         readonly createdAt: string;
-        cards: { nftId: string, url: string }[];
+        cards: { nftId: string, mintHeight: number, url: string }[];
         label: string;
     }
     export type CardDecks = {

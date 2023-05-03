@@ -27,7 +27,7 @@ export const createDeckHandler = (ds: IDataSource, authProvider: IAuthProvider):
                     playerId: player.id,
                     createdAt: moment.utc().format(FULL_DATETIME_FORMAT),
                     label: payload.deckLabel,
-                    cards: nfts.map(x => ({ nftId: x.nftId, url: x.urls[0] || '' })),
+                    cards: nfts.map(x => ({ nftId: x.nftId, mintHeight: x.firstBlock, url: x.urls[0] || '' })),
                 });
 
                 return [StatusCodes.ok, { deck: toClientDeck(deck) }];
@@ -71,7 +71,7 @@ export const createDeckHandler = (ds: IDataSource, authProvider: IAuthProvider):
                     return [StatusCodes.notFound, { reason: 'one or more nft ids were not found, or did not belong to the player' }];
                 }
 
-                deck.cards = nfts.map(x => ({ nftId: x.nftId, url: x.urls[0] || '' }));
+                deck.cards = nfts.map(x => ({ nftId: x.nftId, mintHeight: x.firstBlock, url: x.urls[0] || '' }));
                 await ds.CardDecks.update.exec(deck);
 
                 return [StatusCodes.ok, { deck: toClientDeck(deck) }];
@@ -114,7 +114,7 @@ export const getOrCreateActiveDeck = async (player: IDataSource.IPlayer, ds: IDa
     deck = {
         playerId: player.id,
         createdAt: nowStr,
-        cards: cards.map(x => ({ nftId: x.nftId, url: x.urls[0] || '' })),
+        cards: cards.map(x => ({ nftId: x.nftId, mintHeight: x.firstBlock, url: x.urls[0] || '' })),
         label: 'default',
     };
 

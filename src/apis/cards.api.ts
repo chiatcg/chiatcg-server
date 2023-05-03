@@ -23,7 +23,7 @@ export const createCardsHandler = (): IHttpRouteHandler => {
         if (resp?.nft) {
             return [StatusCodes.ok, {
                 card: {
-                    ...appraiseCard({ nftId: resp.nft.nftId, url: resp.nft.urls[0] || '' }),
+                    ...appraiseCard({ nftId: resp.nft.nftId, mintHeight: resp.nft.firstBlock, url: resp.nft.urls[0] || '' }),
                     urls: resp.nft.urls,
                 },
             }];
@@ -36,7 +36,7 @@ export const createCardsHandler = (): IHttpRouteHandler => {
         if (resp?.nfts.length) {
             return [StatusCodes.ok, {
                 cards: resp.nfts.map(nft => ({
-                    ...appraiseCard({ nftId: nft.nftId, url: nft.urls[0] || '' }),
+                    ...appraiseCard({ nftId: nft.nftId, mintHeight: nft.firstBlock, url: nft.urls[0] || '' }),
                     urls: nft.urls,
                 })),
                 ct: resp.ct,

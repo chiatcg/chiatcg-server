@@ -1,3 +1,5 @@
+const MINT_HEIGHT_THRESHOLD = 3200000;
+
 export type CoreScriptNames = typeof _CoreScriptNames[IAppraisedCard['faction']][number];
 
 export interface IAppraisedCard {
@@ -7,10 +9,10 @@ export interface IAppraisedCard {
     tier: number;
     cpu: number;
     mem: number;
-    url?: string;
+    url: string;
 }
 
-export const appraiseCard = ({ nftId, url }: { nftId: string, url: string }): IAppraisedCard => {
+export const appraiseCard = ({ nftId, mintHeight, url }: { nftId: string, mintHeight: number, url: string }): IAppraisedCard => {
     /**
      * Generates card stats based on the number of digits in the last 8 chars of the nftId,
      * see probability breakdown below:
@@ -43,8 +45,8 @@ export const appraiseCard = ({ nftId, url }: { nftId: string, url: string }): IA
     // Q[2:] is the card statistics qualifier, SQ, each granted statistic increases card tier
     const SQ = Q.slice(2);
     const tier = SQ.reduce((sum, c) => isNaN(+c) ? sum : (sum + 1), 0);
-    if (tier < 2) {
-        // Less than 2 digits is a T1; either 1/2 or 2/1
+    if (tier < 2 || mintHeight >= MINT_HEIGHT_THRESHOLD) {
+        // Less than 2 digits or minted after threshold is a T1; either 1/2 or 2/1
         const singleQualifier = nftId.charCodeAt(nftId.length - 1);
         const cpu = singleQualifier <= 104 ? 2 : 1;
         const mem = 3 - cpu;
