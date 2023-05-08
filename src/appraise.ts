@@ -12,43 +12,34 @@ export interface IAppraisedCard {
     url: string;
 }
 
+/**
+ * Generates card stats based on the number of digits in the last 9 chars of the nftId,
+ */
 export const appraiseCard = ({ nftId, mintHeight, url }: { nftId: string, mintHeight: number, url: string }): IAppraisedCard => {
-    /**
-     * Generates card stats based on the number of digits in the last 8 chars of the nftId,
-     * see probability breakdown below:
-     * 8 - 0.0035%, 1 in 28,211
-     * 7 - 0.0737%, 1 in  1,356
-     * 6 - 0.6708%, 1 in    149
-     * 5 - 3.4888%, 1 in     29
-     * 4 - 11.338%, 1 in      9
-     * 3 - 23.584%, 1 in      4
-     * 2 - 30.660%, 1 in      3
-     * 1 - 22.776%, 1 in      4
-     * 0 - 7.4023%, 1 in     14
-     * 0-1 account for 30% of all ids (T1)
-     */
-
-    // Last 8 chars of the nftId determine the card qualifier, Q
+    // Last 9 chars of the nftId determine the card qualifier, Q
     const Q = nftId.substring(nftId.length - 8).split('');
 
     // Q[0] determines faction
+    //   Since 34 potential characters does not divide cleanly by 3 factions,
+    //   distribution will not come out even - Backdoor will appear 10% less than other factions
     let faction: IAppraisedCard['faction'];
     const factionQualifier = Q[0]!.charCodeAt(0);
-    if (factionQualifier < 99) faction = 'backdoor'; // 0-9, a, b (12 chars)
-    else if (factionQualifier < 111) faction = 'bruteforce'; // c-n (12 chars)
-    else faction = 'malware'; // o-z (12 chars)
+    if (factionQualifier < 99) faction = 'backdoor'; // 0-9, a, b (10 chars, '1' and 'b' do not exist)
+    else if (factionQualifier < 111) faction = 'bruteforce'; // c-n (11 chars, 'i' does not exist)
+    else faction = 'malware'; // o-z (11 chars, 'o' does not exist)
 
-    // Q[1] determines faction core script
+    // The sum of the char codes of Q, sumQ, determines faction core script
+    const sumQ = Q.reduce((sum, c) => sum + c.charCodeAt(0), 0);
     const coreScripts = _CoreScriptNames[faction];
-    const coreScript = coreScripts[Q[1]!.charCodeAt(0) % coreScripts.length]!;
+    const coreScript = coreScripts[sumQ % coreScripts.length]!;
 
     // Q[2:] is the card statistics qualifier, SQ, each granted statistic increases card tier
     const SQ = Q.slice(2);
     const tier = SQ.reduce((sum, c) => isNaN(+c) ? sum : (sum + 1), 0);
     if (tier < 2 || mintHeight >= MINT_HEIGHT_THRESHOLD) {
         // Less than 2 digits or minted after threshold is a T1; either 1/2 or 2/1
-        const singleQualifier = nftId.charCodeAt(nftId.length - 1);
-        const cpu = singleQualifier <= 104 ? 2 : 1;
+        const singleQualifier = Q[1]; // Only either 's' or 'q'
+        const cpu = singleQualifier === 's' ? 2 : 1;
         const mem = 3 - cpu;
         return {
             nftId,
@@ -61,12 +52,19 @@ export const appraiseCard = ({ nftId, mintHeight, url }: { nftId: string, mintHe
         };
     }
 
-    // For each character c in SQ, grant CPU if c > 5, MEM c <= 5, nothing otherwise
+    // For each character c in SQ, grant CPU or MEM if c is numeric, nothing otherwise
+    //   Since there are only 9 possible digits per character, we use 2-5 for MEM, 6-9 for CPU, 0 is treated special
     let cpu = 1;
-    let mem = 1
+    let mem = 1;
     for (const c of SQ) {
-        if (+c > 5) cpu++;
-        else if (+c <= 5) mem++;
+        if (+c > 5) {
+            cpu++; // 6, 7, 8, 9
+        } else if (+c > 0) {
+            mem++; // 2, 3, 4, 5 ('1' does not exist)
+        } else if (+c === 0) {
+            // For 0, we flip a coin on the char code sum of Q which results in 50:50 CPU:MEM distribution
+            (sumQ % 2) ? (cpu++) : (mem++);
+        }
     }
 
     return {
