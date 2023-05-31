@@ -35,9 +35,9 @@ test('appraiseCard', () => {
             bd_decode: 0,
             bd_secure: 0,
             bf_firewall: 0,
-            bf_obfuscate: 0,
+            bf_overclock: 0,
             bf_spam: 0,
-            mw_forward: 0,
+            mw_redirect: 0,
             mw_freeware: 0,
             mw_worm: 0,
         },
@@ -66,10 +66,10 @@ test('appraiseCard', () => {
 
     expect(results.scripts.bd_decode / results.scripts.bd_exploit).toBeCloseTo(1, 1);
     expect(results.scripts.bd_decode / results.scripts.bd_secure).toBeCloseTo(1, 1);
-    expect(results.scripts.bf_firewall / results.scripts.bf_obfuscate).toBeCloseTo(1, 1);
+    expect(results.scripts.bf_firewall / results.scripts.bf_overclock).toBeCloseTo(1, 1);
     expect(results.scripts.bf_firewall / results.scripts.bf_spam).toBeCloseTo(1, 1);
-    expect(results.scripts.mw_forward / results.scripts.mw_freeware).toBeCloseTo(1, 1);
-    expect(results.scripts.mw_forward / results.scripts.mw_worm).toBeCloseTo(1, 1);
+    expect(results.scripts.mw_redirect / results.scripts.mw_freeware).toBeCloseTo(1, 1);
+    expect(results.scripts.mw_redirect / results.scripts.mw_worm).toBeCloseTo(1, 1);
 
     expect(results.tiers[1]! / testSize).toBeCloseTo(.46156);
     expect(results.tiers[2]! / testSize).toBeCloseTo(.31667);

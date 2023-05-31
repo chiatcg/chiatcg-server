@@ -1,12 +1,12 @@
 import * as moment from 'moment';
 import { z } from 'zod';
-import { IAuthProvider, IDataSource } from '../dependencies';
+import { IAuthProvider, IDataSource, IMetricsProvider } from '../dependencies';
 import { ExtDeps } from '../external-dependencies';
 import { toClientPlayer } from '../models';
 import { IHttpRouteHandler, StatusCodes } from '../net-utils';
 import { FULL_DATETIME_FORMAT } from '../utils';
 
-export const createPlayerHandler = (ds: IDataSource, authProvider: IAuthProvider): IHttpRouteHandler =>
+export const createPlayerHandler = (ds: IDataSource, authProvider: IAuthProvider, metrics?: IMetricsProvider): IHttpRouteHandler =>
     async (path, _query, body, req) => {
         switch (path[0]) {
             case 'connectDid': {
@@ -20,7 +20,10 @@ export const createPlayerHandler = (ds: IDataSource, authProvider: IAuthProvider
 
                 const payload = schema.parse(body);
 
-                const did = (await ExtDeps.verifyDidProof(payload.didProof))?.did;
+                const did = (await ExtDeps.verifyDidProof({
+                    ...payload.didProof,
+                    message: 'Proof of DID ownership for ChiaTCG',
+                }))?.did;
                 if (!did) {
                     return [StatusCodes.unauthorized, { reason: 'unable to validate did proof' }];
                 }
@@ -40,8 +43,11 @@ export const createPlayerHandler = (ds: IDataSource, authProvider: IAuthProvider
                         authExpiresAt: newAuthExpireAt,
                         activeGameId: '',
                         activeDeckId: 'default',
+                        score: 0,
                     });
+                    metrics?.newUser(player.id);
                 } else {
+                    ds.Leaderboard.set(player.id, player.score);
                     player.secret = newSecret;
                     player.authExpiresAt = newAuthExpireAt;
                     await ds.Players.update.exec(player);

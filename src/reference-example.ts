@@ -1,9 +1,10 @@
 import * as moment from 'moment';
 import { createCoopHandler } from './apis/coop.api';
-import { IAuthProvider, IDataSource, IPlayerPushProvider } from './dependencies';
+import { IAuthProvider, IDataSource, IPlayerPushProvider, IRateLimitProvider } from './dependencies';
 import { CardMod } from './game/card-mods';
 import { CardScript } from './game/card-scripts';
-import { GameEngine, createGameEngine } from './game/game-engine';
+import { GameEngine, createGameEngineProvider } from './game/game-engine';
+import { GameEngineUtils } from './game/game-engine-utils';
 import { IHttpRequest, IHttpRouteHandler, StatusCodes } from './net-utils';
 import { FULL_DATETIME_FORMAT } from './utils';
 
@@ -27,7 +28,7 @@ export const handleRequest = async (req: IHttpRequest) => {
         // ... Note: implement remaining route handlers
     }
 
-    const result = handler ? (await handler(subPath, body, query, req)) : null;
+    const result = handler ? (await handler(subPath, query, body, req)) : null;
     return result || [StatusCodes.badRequest, { reason: 'invalid api' }];
 };
 
@@ -40,6 +41,7 @@ export const handleRequest = async (req: IHttpRequest) => {
 const cardDecksTable = createMockTableDualKey<IDataSource.ICardDeck>('playerId', 'createdAt');
 const coopGamesTable = createMockTableSingleKey<IDataSource.ICoopGame>('id');
 const playersTable = createMockTableSingleKey<IDataSource.IPlayer>('id');
+const playerCoopGamesTable = createMockTableSingleKey<IDataSource.IPlayerCoopGame>('playerId');
 const dataSource: IDataSource = {
     CardDecks: {
         ...cardDecksTable,
@@ -59,6 +61,17 @@ const dataSource: IDataSource = {
     Players: {
         ...playersTable,
     },
+    PlayerCoopGames: {
+        ...playerCoopGamesTable,
+        async queryByPlayerId(playerId: string) {
+            return { items: [...playerCoopGamesTable._db.values()].filter(x => x.playerId === playerId) };
+        },
+    },
+    Leaderboard: {
+        getTopN(_n) { return [] as any; },
+        async set(_playerId, _score) { },
+    },
+
     async execUpdates(...updateRequests) {
         updateRequests.forEach(x => x());
     },
@@ -69,6 +82,7 @@ const authProvider: IAuthProvider = {
     generateNewSecret: () => `${Math.random()}`,
     getAuthTokenForPlayer: player => player.secret,
     getPlayerFromRequest: async () => [...playersTable._db.values()][0]!,
+    getPlayerIdFromRequest: () => [...playersTable._db.values()][0]?.id!,
 };
 
 // Note: replace with an actual push provider
@@ -79,14 +93,23 @@ const pushProvider: IPlayerPushProvider = {
     }
 };
 
-// Note: replace with custom game content
-const gameContent: GameEngine.IGameContentPlugin = {
-    cardMods: [/** Custom card modifiers **/],
-    cardScripts: [/** Custom card scripts **/],
+const rateLimitProvider: IRateLimitProvider = {
+    async shouldRateLimitCreateGame(_playerId) {
+        return false;
+    },
+    async shouldRateLimitSearchGame(_playerId) {
+        return false;
+    },
+};
 
-    createFirstEnemy(id) {
+// Note: replace with custom game content
+const gameContent: GameEngine.IRuleset = {
+    cardMods: { /** Custom card modifiers **/ },
+    cardScripts: { /** Custom card scripts **/ },
+
+    initGame(engine) {
         const testEnemy: GameEngine.IEnemyCardState = {
-            id,
+            id: engine.nextId(),
             enemyClass: 'testEnemy',
             cpu: 1,
             mem: 1,
@@ -96,19 +119,17 @@ const gameContent: GameEngine.IGameContentPlugin = {
             sec: 10,
         };
         testEnemy.mods.push(new CardMod.Content._standardAi().serialize());
-        testEnemy.scripts.push(new CardScript.Content._attack(testEnemy, 'strong').serialize());
-        return testEnemy;
+        testEnemy.scripts.push(new CardScript.Content._attack(testEnemy, engine.gameData.difficulty).serialize());
+        GameEngineUtils.addEnemy(engine, testEnemy, 0, true);
     },
-    createEnemy(_enemyClass, id) {
-        return this.createFirstEnemy(id);
-    },
+
     addAdditionalScriptsFor(_card) {
         // Note: Called by GameEngine when a player is joined; this hook allows for dynamic scripts for a given card
     },
 };
 
-const gameEngine = createGameEngine(gameContent, dataSource, pushProvider);
-const coopHandler = createCoopHandler(dataSource, gameEngine, authProvider);
+const gameEngine = createGameEngineProvider({ mfrm: gameContent }, dataSource, pushProvider);
+const coopHandler = createCoopHandler(dataSource, gameEngine, authProvider, rateLimitProvider);
 
 
 /**
@@ -128,6 +149,7 @@ const coopHandler = createCoopHandler(dataSource, gameEngine, authProvider);
         authExpiresAt: '2100-01-01',
         createdAt: moment.utc().format(FULL_DATETIME_FORMAT),
         lastSeenAt: moment.utc().format(FULL_DATETIME_FORMAT),
+        score: 0,
     }
     playersTable._db.set(mockPlayer.id, mockPlayer);
 
@@ -139,6 +161,10 @@ const coopHandler = createCoopHandler(dataSource, gameEngine, authProvider);
     await handleRequest({
         httpMethod: 'POST',
         path: '/coop/create',
+        body: JSON.stringify({
+            gameVisibility: 'private',
+            difficulty: 1,
+        }),
     });
     console.log('Game created, gameId: ' + mockPlayer.activeGameId);
 

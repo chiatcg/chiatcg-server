@@ -1,4 +1,3 @@
-import { IPlayerPushProvider } from '../dependencies';
 import { CardScript } from './card-scripts';
 import { GameEngine } from './game-engine';
 import { GameEngineUtils } from './game-engine-utils';
@@ -15,16 +14,19 @@ export abstract class CardMod {
         this.modName = this.constructor.name;
     }
 
-    onSecDamaged?(deps: CardMod.ICardModDeps, damage: number, attacker: GameEngine.ICardState): { secDmgBonus: number } | void;
-    onDamageSec?(deps: CardMod.ICardModDeps, baseDmg: number): { secDmgBonus: number } | void;
+    onSecDamageIn?(deps: CardMod.ICardModDeps, damage: number, attacker: GameEngine.ICardState): { secDmgBonus: number } | void;
+    onSecDamageOut?(deps: CardMod.ICardModDeps, baseDmg: number): { secDmgBonus: number } | void;
 
-    onInit?(deps: CardMod.ICardModDeps): void;
-    onRemove?(deps: CardMod.ICardModDeps): void;
-    onDestroy?(deps: CardMod.ICardModDeps): void;
-    onGameStart?(deps: CardMod.ICardModDeps): void;
-    onStack?(deps: CardMod.ICardModDeps, stackDelta: number): void;
+    onMemDmgIn?(deps: CardMod.ICardModDeps, memDmg: number): void;
+    onMemDmgOut?(deps: CardMod.ICardModDeps, memDmg: number): void;
+
+    onInitMod?(deps: CardMod.ICardModDeps): void;
+    onRemoveMod?(deps: CardMod.ICardModDeps): void;
+    onCardDestroyed?(deps: CardMod.ICardModDeps): void;
+    onStackMod?(deps: CardMod.ICardModDeps, stackDelta: number): void;
     onTurnStart?(deps: CardMod.ICardModDeps): void;
     onTurnEnd?(deps: CardMod.ICardModDeps): void;
+    onEnemyDestroyed?(deps: CardMod.ICardModDeps): void;
 
     serialize() {
         const stackingData = CardMod.makeStackingData(this.stackingConfig);
@@ -34,7 +36,7 @@ export abstract class CardMod {
         return modData;
     }
 
-    static addMod(gameData: GameEngine.IGameData, card: GameEngine.ICardState, mod: CardMod, broadcast: IPlayerPushProvider.IPushMessage[], contextCard?: GameEngine.ICardState) {
+    static addMod(engine: GameEngine.IGameEngine, card: GameEngine.ICardState, mod: CardMod, contextCard?: GameEngine.ICardState) {
         const modData = mod.serialize();
 
         switch (mod.stackingConfig.behavior) {
@@ -58,7 +60,7 @@ export abstract class CardMod {
                     if (existingStackingData[2] >= mod.stackingConfig.rank) {
                         return;
                     }
-                    this.removeMod(gameData, card, existingModData, broadcast, contextCard);
+                    this.removeMod(engine, card, existingModData, contextCard);
                     if (card.isRemoved) return;
                 }
                 card.mods.push(modData);
@@ -68,7 +70,7 @@ export abstract class CardMod {
             case CardMod.StackingBehavior.replace: {
                 const existingModData = card.mods.find(x => x[0] === mod.modName);
                 if (existingModData) {
-                    this.removeMod(gameData, card, existingModData, broadcast, contextCard);
+                    this.removeMod(engine, card, existingModData, contextCard);
                     if (card.isRemoved) return;
                 }
                 card.mods.push(modData);
@@ -80,12 +82,14 @@ export abstract class CardMod {
                 if (existingModData) {
                     const existingStackingData = existingModData[1] as CardMod.RankedStackingData;
                     existingStackingData && (existingStackingData[2] += mod.stackingConfig.stackCount);
-                    broadcast.push({
-                        type: 'modChanged',
+                    engine.broadcast.push({
+                        type: 'modStackChanged',
                         cardId: card.id,
                         modData: existingModData,
+                        stackDelta: mod.stackingConfig.stackCount,
+                        newStackCount: existingStackingData[2],
                     });
-                    this.trigger('onStack', existingModData, { broadcast, gameData, sourceCard: card, contextCard }, mod.stackingConfig.stackCount);
+                    this.trigger('onStackMod', existingModData, { engine, sourceCard: card, contextCard }, mod.stackingConfig.stackCount);
                     return;
                 }
                 card.mods.push(modData);
@@ -93,15 +97,12 @@ export abstract class CardMod {
             }
         }
 
-        const durationData = this.findDurationData(modData);
-        durationData && durationData[1]++;
-
-        broadcast.push({
+        engine.broadcast.push({
             type: 'modAdded',
             cardId: card.id,
             modData,
         });
-        this.trigger('onInit', modData, { broadcast, gameData, sourceCard: card, contextCard });
+        this.trigger('onInitMod', modData, { engine, sourceCard: card, contextCard });
     }
 
     static areEqual(left: CardMod.ModData, right: CardMod.ModData) {
@@ -109,8 +110,8 @@ export abstract class CardMod {
         return left.join('') === right.join('');
     }
 
-    static deserialize(modData: CardMod.ModData) {
-        const modCtor = (CardMod.Content as CardMod.ModLibrary)[modData[0]];
+    static deserialize(engine: GameEngine.IGameEngine, modData: CardMod.ModData) {
+        const modCtor = engine.ruleset.cardMods?.[modData[0]];
         if (!modCtor) throw new Error('mod not found: ' + modData.join());
 
         const durationData = this.findDurationData(modData);
@@ -135,6 +136,14 @@ export abstract class CardMod {
         return (Array.isArray(maybeDurationData) && maybeDurationData[0] === '$duration') ? (modData[2] as CardMod.DurationData) : undefined;
     }
 
+    static findModOfType(card: GameEngine.ICardState, modType: CardMod.ModConstructor) {
+        return card.mods.find(x => x[0] === modType.name);
+    }
+
+    static getStackCount(modData: CardMod.ModData) {
+        return modData[1][1] === CardMod.StackingBehavior.stack ? modData[1][2] : 0;
+    }
+
     static makeDurationData(duration: number): CardMod.DurationData {
         return ['$duration', duration];
     }
@@ -152,8 +161,8 @@ export abstract class CardMod {
         return stackingData as CardMod.StackingData;
     }
 
-    static removeMod(gameData: GameEngine.IGameData, card: GameEngine.ICardState, modData: CardMod.ModData, broadcast: IPlayerPushProvider.IPushMessage[], contextCard?: GameEngine.ICardState) {
-        broadcast.push({
+    static removeMod(engine: GameEngine.IGameEngine, card: GameEngine.ICardState, modData: CardMod.ModData, contextCard?: GameEngine.ICardState) {
+        engine.broadcast.push({
             type: 'modRemoved',
             cardId: card.id,
             modData,
@@ -163,13 +172,13 @@ export abstract class CardMod {
             throw new Error('mod not found');
         }
 
-        this.trigger('onRemove', modData, { broadcast, gameData, sourceCard: card, contextCard });
+        this.trigger('onRemoveMod', modData, { engine, sourceCard: card, contextCard });
         card.mods.findAndRemoveFirst(x => this.areEqual(x, modData));
     }
 
-    static removeModByName<T extends CardMod.ModLibrary, K extends keyof T>(gameData: GameEngine.IGameData, card: GameEngine.ICardState, modName: K, broadcast: IPlayerPushProvider.IPushMessage[], contextCard?: GameEngine.ICardState) {
+    static removeModByName<T extends CardMod.ModLibrary, K extends keyof T>(engine: GameEngine.IGameEngine, card: GameEngine.ICardState, modName: K, contextCard?: GameEngine.ICardState) {
         const mod = card.mods.find(x => x[0] === modName);
-        mod && this.removeMod(gameData, card, mod, broadcast, contextCard);
+        mod && this.removeMod(engine, card, mod, contextCard);
     }
 
     static trigger<T extends CardMod.ModEvent>(ev: T, modData: CardMod.ModData, ...args: Parameters<NonNullable<CardMod[typeof ev]>>) {
@@ -179,7 +188,7 @@ export abstract class CardMod {
             throw new Error(`card [${deps.sourceCard.id}] does not have mod [${modData.join()}], mods are ${deps.sourceCard.mods.join('|')}`);
         }
 
-        const mod = this.deserialize(modDataFromCard);
+        const mod = this.deserialize(deps.engine, modDataFromCard);
         const evnt = mod[ev];
         const evntRetVal = evnt ? (evnt as any).apply(mod, args) : undefined;
         if (deps.sourceCard.isRemoved) {
@@ -192,13 +201,14 @@ export abstract class CardMod {
                 if (durationData[1] > 1) {
                     durationData[1]--;
 
-                    deps.broadcast.push({
-                        type: 'modChanged',
+                    deps.engine.broadcast.push({
+                        type: 'modDurationChanged',
                         cardId: deps.sourceCard.id,
                         modData: modData,
+                        newDuration: durationData[1],
                     });
                 } else {
-                    this.removeMod(deps.gameData, deps.sourceCard, modData, deps.broadcast);
+                    this.removeMod(deps.engine, deps.sourceCard, modData);
                 }
             }
         }
@@ -229,16 +239,14 @@ export namespace CardMod {
     }
 
     export interface ICardModDeps {
-        gameData: GameEngine.IGameData;
+        engine: GameEngine.IGameEngine;
         sourceCard: GameEngine.ICardState;
-        broadcast: IPlayerPushProvider.IPushMessage[];
-
         contextCard?: GameEngine.ICardState;
     }
 
     export namespace Content {
         // Defines a card modifier - the class name is treated as the mod name
-        export class exploited extends CardMod {
+        export class backdoor extends CardMod {
             override stackingConfig = {
                 behavior: CardMod.StackingBehavior.ranked as const,
                 rank: 0,
@@ -253,60 +261,176 @@ export namespace CardMod {
 
                 this.stackingConfig.rank = damage;
             }
+        }
 
-            // Define card modifiers behavior by hooking into a game event.
-            override onSecDamaged(_deps: ICardModDeps, _damage: number, _attacker: GameEngine.ICardState) {
-                return { secDmgBonus: this.stackingConfig.rank };
+        export class diagnostics extends CardMod {
+            override stackingConfig = {
+                behavior: CardMod.StackingBehavior.stack as const,
+                stackCount: 0,
+            };
+
+            constructor(public secBonus: number, override duration: number) {
+                super(arguments);
+
+                this.stackingConfig.stackCount = secBonus;
+            }
+
+            override onTurnEnd(deps: ICardModDeps): void {
+                GameEngineUtils.changeSec(deps.engine, deps.sourceCard, this.stackingConfig.stackCount, false);
             }
         }
 
         export class firewall extends CardMod {
+            override stackingConfig = {
+                behavior: CardMod.StackingBehavior.ranked as const,
+                rank: 0,
+            };
+
+            constructor(override duration: number) {
+                super(arguments);
+                this.stackingConfig.rank = duration;
+            }
+
+            override onInitMod(deps: ICardModDeps) {
+                if (GameEngineUtils.isEnemyCard(deps.engine.gameData, deps.sourceCard)) {
+                    return;
+                }
+
+                GameEngineUtils.revalidateIntents(deps.engine, true);
+            }
+        }
+
+        export class impervious extends CardMod {
+            constructor(override duration = -1) {
+                super(arguments);
+            }
+
+            override onSecDamageIn(_deps: ICardModDeps, _damage: number, _attacker: GameEngine.ICardState) {
+                return {
+                    secDmgBonus: -9999,
+                };
+            }
+        }
+
+        export class lag extends CardMod {
             constructor(override duration: number) {
                 super(arguments);
             }
 
-            override onInit(deps: ICardModDeps) {
-                if (GameEngineUtils.isEnemyCard(deps.sourceCard)) {
-                    return;
+            override onInitMod(deps: CardMod.ICardModDeps) {
+                if (GameEngineUtils.isEnemyCard(deps.engine.gameData, deps.sourceCard)) {
+                    GameEngineUtils.clearIntent(deps.engine, deps.sourceCard);
+                } else {
+                    GameEngineUtils.changeCardIsUsed(deps.engine, deps.sourceCard, true);
                 }
+            }
 
-                GameEngineUtils.revalidateIntents(deps.gameData, true, deps.broadcast);
+            override onTurnStart(deps: CardMod.ICardModDeps) {
+                if (GameEngineUtils.isEnemyCard(deps.engine.gameData, deps.sourceCard)) {
+                    GameEngineUtils.clearIntent(deps.engine, deps.sourceCard);
+                } else {
+                    GameEngineUtils.changeCardIsUsed(deps.engine, deps.sourceCard, true);
+                }
+            }
+
+            override onRemoveMod(deps: ICardModDeps): void {
+                if (GameEngineUtils.isEnemyCard(deps.engine.gameData, deps.sourceCard)) {
+                    GameEngineUtils.generateIntent(deps.engine, deps.sourceCard);
+                } else {
+                    GameEngineUtils.changeCardIsUsed(deps.engine, deps.sourceCard, false);
+                }
+            }
+        }
+
+        export class offline extends CardMod {
+            constructor(override duration: number) {
+                super(arguments);
+            }
+
+            override onInitMod(deps: CardMod.ICardModDeps) {
+                if (GameEngineUtils.isEnemyCard(deps.engine.gameData, deps.sourceCard)) {
+                    GameEngineUtils.clearIntent(deps.engine, deps.sourceCard);
+                }
+                GameEngineUtils.revalidateIntents(deps.engine, GameEngineUtils.isEnemyCard(deps.engine.gameData, deps.sourceCard));
+            }
+
+            override onTurnStart(deps: CardMod.ICardModDeps) {
+                if (GameEngineUtils.isEnemyCard(deps.engine.gameData, deps.sourceCard)) {
+                    GameEngineUtils.clearIntent(deps.engine, deps.sourceCard);
+                } else {
+                    GameEngineUtils.changeCardIsUsed(deps.engine, deps.sourceCard, true);
+                }
+            }
+
+            override onRemoveMod(deps: ICardModDeps): void {
+                if (GameEngineUtils.isEnemyCard(deps.engine.gameData, deps.sourceCard)) {
+                    GameEngineUtils.generateIntent(deps.engine, deps.sourceCard);
+                } else {
+                    GameEngineUtils.changeCardIsUsed(deps.engine, deps.sourceCard, false);
+                }
             }
         }
 
         export class secured extends CardMod {
+            override stackingConfig = {
+                behavior: CardMod.StackingBehavior.stack as const,
+                stackCount: 0,
+            };
+
             constructor(public tempSecBonus: number, override duration: number) {
                 super(arguments);
+                this.stackingConfig.stackCount = tempSecBonus;
             }
 
-            override onInit(deps: ICardModDeps) {
-                GameEngineUtils.changeSec(deps.sourceCard, this.tempSecBonus, deps.broadcast);
+            override onInitMod(deps: ICardModDeps) {
+                GameEngineUtils.changeSec(deps.engine, deps.sourceCard, this.stackingConfig.stackCount, false);
             }
 
-            override onTurnStart(deps: ICardModDeps) {
-                GameEngineUtils.changeSec(deps.sourceCard, -this.tempSecBonus, deps.broadcast);
+            override onStackMod(deps: ICardModDeps, stackDelta: number): void {
+                GameEngineUtils.changeSec(deps.engine, deps.sourceCard, stackDelta, false);
+            }
+
+            override onRemoveMod(deps: ICardModDeps) {
+                GameEngineUtils.changeSec(deps.engine, deps.sourceCard, -this.stackingConfig.stackCount, true);
             }
         }
 
-        export class winOnDeath extends CardMod {
-            override onDestroy(deps: ICardModDeps) {
-                deps.gameData.state = 'players_won';
+        export class _waveBonus_extraMove extends CardMod {
+            override onInitMod(deps: ICardModDeps): void {
+                const player = GameEngineUtils.findPlayerByCardId(deps.engine.gameData, deps.sourceCard.id);
+                player.movesPerTurn++;
+                player.movesLeft = player.movesPerTurn;
+                deps.engine.broadcast.push({
+                    type: 'movesPerTurnsChange',
+                    playerId: player.id,
+                    newMovesLeft: player.movesLeft,
+                    newMovesPerTurn: player.movesPerTurn,
+                });
+            }
+        }
+
+        export class _winOnDeath extends CardMod {
+            override onCardDestroyed(deps: ICardModDeps) {
+                const player = deps.contextCard ? GameEngineUtils.findPlayerByCardIdMaybe(deps.engine.gameData, deps.contextCard.id) : null;
+                player && player.stats.kills++;
+                deps.engine.onWinGame();
+                player && player.stats.kills--;
             }
         }
 
         export class _standardAi extends CardMod {
             override onTurnStart(deps: ICardModDeps) {
-                if (!GameEngineUtils.isEnemyCard(deps.sourceCard)) {
+                if (!GameEngineUtils.isEnemyCard(deps.engine.gameData, deps.sourceCard)) {
                     throw new Error('not an enemy card');
                 }
-                GameEngineUtils.generateIntent(deps.gameData, deps.sourceCard, deps.broadcast);
+                GameEngineUtils.generateIntent(deps.engine, deps.sourceCard);
             }
 
             override onTurnEnd(deps: ICardModDeps) {
-                if (!GameEngineUtils.isEnemyCard(deps.sourceCard)) {
+                if (!GameEngineUtils.isEnemyCard(deps.engine.gameData, deps.sourceCard)) {
                     throw new Error('not an enemy card');
                 }
-                GameEngineUtils.executeIntent(deps.gameData, deps.sourceCard, deps.broadcast);
+                GameEngineUtils.executeIntent(deps.engine, deps.sourceCard);
             }
         }
 
@@ -318,8 +442,30 @@ export namespace CardMod {
                 super(arguments);
             }
 
-            override onRemove(deps: ICardModDeps) {
-                GameEngineUtils.addScript(deps.gameData, deps.sourceCard, this.scriptData, deps.broadcast);
+            override onRemoveMod(deps: ICardModDeps) {
+                CardScript.addScript(deps.engine, deps.sourceCard, this.scriptData);
+            }
+        }
+
+        export class _waveTrigger extends CardMod {
+            constructor(
+                public rulesetIds: string[],
+                override duration = -1,
+            ) {
+                super(arguments);
+            }
+
+            override onInitMod(deps: ICardModDeps): void {
+                deps.engine.gameData.difficulty < 3 && GameEngineUtils.changeSec(deps.engine, deps.sourceCard, 25, true);
+            }
+
+            override onCardDestroyed(deps: ICardModDeps) {
+                deps.engine.onNextWave(this.rulesetIds.random());
+                deps.contextCard && CardMod.addMod(deps.engine, deps.contextCard, new _waveBonus_extraMove());
+            }
+
+            override onRemoveMod(deps: ICardModDeps): void {
+                CardMod.addMod(deps.engine, deps.sourceCard, new _winOnDeath());
             }
         }
     }

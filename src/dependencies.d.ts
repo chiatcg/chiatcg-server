@@ -37,7 +37,7 @@ declare namespace IDataSource {
         id: string;
         difficulty: number;
         createdAt: string;
-        gameState: 'open' | 'full' | 'private' | `ended_${string}`;
+        gameState: 'open' | 'private' | `ended_${string}`;
         playersIds: Set<string>;
         ingorePlayerIds: Set<string>;
         startedAt: string;
@@ -60,6 +60,7 @@ declare namespace IDataSource {
         authExpiresAt: string;
         activeGameId: string;
         activeDeckId: string;
+        score: number;
     }
     export type Players = {
         get: GetterSingle<IPlayer>;
@@ -67,15 +68,40 @@ declare namespace IDataSource {
     };
 
 
+    export interface IPlayerCoopGame {
+        playerId: string;
+        endedAt: string;
+        gameId: string;
+        gameResult: 'win' | 'loss' | 'abandoned' | 'unknown';
+        teammates: string[];
+        score: number;
+        turns: number;
+        difficulty: number;
+        rulesetIds: string[];
+    }
+    export type PlayerCoopGame = {
+        update: Updater<IPlayerCoopGame>;
+        queryByPlayerId: Query<string, IPlayerCoopGame>;
+    }
+
+
     export type GameData = {
         get: GetterSingle<GameEngine.IGameData>;
         update: Updater<GameEngine.IGameData>;
+    };
+
+
+    export type Leaderboard = {
+        getTopN(n: number): Promise<[string, number][]>;
+        set(playerId: string, score: number): Promise<void>;
     };
 }
 declare interface IDataSource {
     CardDecks: IDataSource.CardDecks;
     CoopGames: IDataSource.CoopGames;
     GameData: IDataSource.GameData;
+    Leaderboard: IDataSource.Leaderboard;
+    PlayerCoopGames: IDataSource.PlayerCoopGame;
     Players: IDataSource.Players;
 
     /**
@@ -89,7 +115,9 @@ declare interface IAuthProvider {
     generateNewSecret(): string;
     getAuthTokenForPlayer(player: IDataSource.IPlayer): string;
     getPlayerFromRequest(req: IHttpRequest): Promise<IDataSource.IPlayer>;
+    getPlayerIdFromRequest(req: IHttpRequest): string;
 }
+
 
 declare namespace IPlayerPushProvider {
     export interface IPushMessage {
@@ -99,4 +127,29 @@ declare namespace IPlayerPushProvider {
 }
 declare interface IPlayerPushProvider {
     push(playerId: string, messages: IPlayerPushProvider.IPushMessage[]): Promise<void>;
+}
+
+
+declare interface IRateLimitProvider {
+    shouldRateLimitCreateGame(playerId: string): Promise<boolean>;
+    shouldRateLimitSearchGame(playerId: string): Promise<boolean>;
+}
+
+
+declare interface IMetricsProvider {
+    userPresence(playerId: string): void;
+    httpRequest(path: string, status: number): void;
+    wsRequest(api: string, isSuccess: boolean): void;
+
+    newUser(playerId: string): void;
+    deckUpdated(playerId: string, deckId: string): void;
+    nftOwnershipConflict(playerId: string): void;
+    gameCreated(gameId: string, playerId: string, initialRulesetId: string, visibility: string, difficulty: number): void;
+    gameStarted(gameId: string, initialRulesetId: string, players: string[], fromMatchmaking: boolean): void;
+    gameJoined(gameId: string, midGame: boolean): void;
+    gameEnded(gameId: string, result: string, rulesets: string[], players: string[], turns: number, totalScore: number): void;
+    playerCardPlayed(gameId: string, currentRulesetId: string, playerId: string, card: GameEngine.IPlayerCardState, scriptName: string): void;
+    idlePlayerRemoved(gameId: string, idlePlayerId: string): void;
+
+    flush(): Promise<void>;
 }

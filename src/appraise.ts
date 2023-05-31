@@ -87,12 +87,12 @@ const _CoreScriptNames = {
 
     bruteforce: [
         'bf_firewall',
-        'bf_obfuscate',
+        'bf_overclock',
         'bf_spam',
     ] as const,
 
     malware: [
-        'mw_forward',
+        'mw_redirect',
         'mw_freeware',
         'mw_worm',
     ] as const,

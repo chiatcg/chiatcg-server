@@ -14,6 +14,7 @@ export namespace ExtDeps {
         latestCoinId: string;
         pubkey: string;
         signature: string;
+        message: string;
     };
 
     export async function getNft(nftId: string) {
